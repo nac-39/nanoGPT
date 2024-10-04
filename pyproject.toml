@@ -13,9 +13,12 @@ dependencies = [
     "tiktoken>=0.7.0",
     "wandb>=0.18.3",
     "tqdm>=4.66.5",
+    "hatchling>=1.25.0",
+    "editables>=0.5",
+    "wheel>=0.44.0",
 ]
 readme = "README.md"
-requires-python = ">= 3.8"
+requires-python = ">= 3.10"
 
 [build-system]
 requires = ["hatchling"]
