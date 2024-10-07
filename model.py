@@ -10,10 +10,26 @@ https://github.com/huggingface/transformers/blob/main/src/transformers/models/gp
 import math
 import inspect
 from dataclasses import dataclass
+from typing import Literal
 
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+
+from fla.layers import Attention
+
+
+@dataclass
+class GPTConfig:
+    block_size: int = 1024
+    vocab_size: int = 50304  # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
+    n_layer: int = 12
+    n_head: int = 12
+    n_embd: int = 768
+    dropout: float = 0.0
+    bias: bool = True  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
+    attention: Literal["CausalSelfAttention", "FlashAttention"] = "CausalSelfAttention"
+
 
 class LayerNorm(nn.Module):
     """LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False"""
@@ -26,9 +42,33 @@ class LayerNorm(nn.Module):
     def forward(self, input):
         return F.layer_norm(input, self.weight.shape, self.weight, self.bias, 1e-5)
 
-class CausalSelfAttention(nn.Module):
 
-    def __init__(self, config):
+class FlaAttentionCompat(Attention):
+    def __init__(self, config: GPTConfig):
+        super().__init__(
+            # self,
+            hidden_size=config.n_embd,
+            num_heads=config.n_head,
+            num_kv_heads=config.n_head,  # num_kv_headsは通常num_headsと同じ
+            window_size=None,  # 必要に応じて設定
+            max_position_embeddings=None,  # 必要に応じて設定
+            layer_idx=None,  # 必要に応じて設定
+        )
+
+    def forward(self, x):
+        o, attentions, past_key_values = super().forward(
+            x,
+            attention_mask=None,
+            past_key_values=None,
+            output_attentions=False,
+            use_cache=False,
+        )
+
+        return o
+
+
+class CausalSelfAttention(nn.Module):
+    def __init__(self, config: GPTConfig):
         super().__init__()
         assert config.n_embd % config.n_head == 0
         # key, query, value projections for all heads, but in a batch
@@ -98,13 +138,13 @@ class CausalSelfAttention(nn.Module):
         y = self.resid_dropout(self.c_proj(y))
         return y
 
-class MLP(nn.Module):
 
+class MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
-        self.gelu    = nn.GELU()
-        self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
+        self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
+        self.gelu = nn.GELU()
+        self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
         self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x):
@@ -116,11 +156,15 @@ class MLP(nn.Module):
 
 
 class Block(nn.Module):
-
-    def __init__(self, config):
+    def __init__(self, config: GPTConfig):
         super().__init__()
         self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
-        self.attn = CausalSelfAttention(config)
+        if config.attention == "FlaAttention":
+            self.attn = FlaAttentionCompat(
+                config
+            )  # コマンド引数, 各configファイルで書き換えれば設定可能
+        elif config.attention == "CausalSelfAttention":
+            self.attn = CausalSelfAttention(config)
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
 
@@ -129,18 +173,8 @@ class Block(nn.Module):
         x = x + self.mlp(self.ln_2(x))
         return x
 
-@dataclass
-class GPTConfig:
-    block_size: int = 1024
-    vocab_size: int = 50304 # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
-    n_layer: int = 12
-    n_head: int = 12
-    n_embd: int = 768
-    dropout: float = 0.0
-    bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
 
 class GPT(nn.Module):
-
     def __init__(self, config):
         super().__init__()
         assert config.vocab_size is not None
@@ -242,7 +276,14 @@ class GPT(nn.Module):
                 block.attn.bias = block.attn.bias[:, :, :block_size, :block_size]
 
     @classmethod
-    def from_pretrained(cls, model_type, override_args=None):
+    def from_pretrained(
+        cls,
+        model_type,
+        attention_func: Literal[
+            "CausalSelfAttention", "FlashAttention"
+        ] = "CausalSelfAttention",
+        override_args=None,
+    ):
         assert model_type in {"gpt2", "gpt2-medium", "gpt2-large", "gpt2-xl"}
         override_args = override_args or {}  # default to empty dict
         # only dropout can be overridden see more notes below
@@ -267,7 +308,7 @@ class GPT(nn.Module):
             print(f"overriding dropout rate to {override_args['dropout']}")
             config_args["dropout"] = override_args["dropout"]
         # create a from-scratch initialized minGPT model
-        config = GPTConfig(**config_args)
+        config = GPTConfig(attention=attention_func, **config_args)
         model = GPT(config)
         sd = model.state_dict()
         sd_keys = sd.keys()
