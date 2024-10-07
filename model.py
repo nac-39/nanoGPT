@@ -165,6 +165,7 @@ class Block(nn.Module):
             )  # コマンド引数, 各configファイルで書き換えれば設定可能
         elif config.attention == "CausalSelfAttention":
             self.attn = CausalSelfAttention(config)
+
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
 
