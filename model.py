@@ -43,7 +43,7 @@ class LayerNorm(nn.Module):
         return F.layer_norm(input, self.weight.shape, self.weight, self.bias, 1e-5)
 
 
-class FlaAttentionCompat(Attention):
+class FlashAttentionCompat(Attention):
     def __init__(self, config: GPTConfig):
         super().__init__(
             # self,
@@ -159,13 +159,13 @@ class Block(nn.Module):
     def __init__(self, config: GPTConfig):
         super().__init__()
         self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
-        if config.attention == "FlaAttention":
-            self.attn = FlaAttentionCompat(
+        if config.attention == "FlashAttention":
+            self.attn = FlashAttentionCompat(
                 config
             )  # コマンド引数, 各configファイルで書き換えれば設定可能
         elif config.attention == "CausalSelfAttention":
             self.attn = CausalSelfAttention(config)
-
+        assert config.attention in {"FlashAttention", "CausalSelfAttention"}
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
 
